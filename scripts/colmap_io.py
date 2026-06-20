@@ -117,7 +117,7 @@ def read_points3D_text(path):
     header = []
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
-            s = line.rstrip("\n")
+            s = line.rstrip("\r\n")  # \r も除去（CRLF/LF どちらの入力でも raw を統一）
             if s.startswith("#"):
                 header.append(s)
                 continue
@@ -156,7 +156,8 @@ def write_points3D_text(path, raw_lines, keep_mask, header=None):
     # COLMAP 慣例の点数コメントを更新して付与
     header = [h for h in header if not h.lower().startswith("# number of points")]
     header = header + [f"# Number of points: {kept}, mean track length: 0"]
-    with open(path, "w", encoding="utf-8") as f:
+    # newline="\n" で Windows の \n→\r\n 変換を抑止（LF を faithful に出力）。
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         for h in header:
             f.write(h + "\n")
         for raw, keep in zip(raw_lines, keep_mask):
