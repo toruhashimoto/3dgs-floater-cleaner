@@ -4,7 +4,33 @@
 
 対象データは RealityScan が COLMAP text 形式で出力した `sano`（cameras / images / points3D）。
 
-> 成果物は「フローターを消すツール」ではなく、**学習前クリーンアップの効果量と、安全な除去パラメータの確定**。フローターは学習中に生成される創発物であり、学習前に除去するのは「フローターの種になる外れ点（空中・遠方の SfM ノイズ点）」。
+> （初期の主目的。**検証は完了済み** → 下記「結論」を参照）
+
+---
+
+## ★ 結論（2026-06-20）と実用ツール
+
+検証の結果（詳細は **[FINDINGS.md](FINDINGS.md)**）:
+- **学習前 SOR / カメラ凸包外除去（init 側介入）は効かない** — MCMC が背景を再成長させ washes out（sano/toyota で確認）。
+- **効くのは学習時の幾何正則化 `scale_reg`** — LichtFeld で `scale_reg=0.02` にすると floater(a) を **−75〜82%**、PSNR/SSIM はほぼ不変（15k/30k・2データセットで再現）。`opacity_reg` は上げない（PSNR 劣化）。
+- floater(b)（凸包外 ~82–85%）は**正当な背景**で、深度正則化（外部 gsplat）でも減らない（`GSPLAT_SETUP.md`）。
+
+→ この成果を使う **デスクトップツール「FloaterClean Trainer」** を同梱（下記）。
+
+## FloaterClean Trainer（ワンクリック低フローター学習・推奨）
+
+RealityScan を COLMAP 形式でエクスポートしたフォルダ（`images/` + `sparse/0`、`F:\RealityScan\sano` と同構造）を選び、検証済み `scale_reg` 設定で LichtFeld をヘッドレス学習 → 低フローターの `.ply` を出力。ブラウザ不要のネイティブ窓（Tkinter）。
+
+```
+app\run_desktop.bat               # ダブルクリックで起動（初回は venv 自動作成）
+app\install_desktop_shortcut.ps1  # 任意: デスクトップにショートカット作成
+```
+- **入力**: RealityScan→COLMAP エクスポートフォルダ（アライメント再構成済み前提）。
+- **強度**: 標準 `scale_reg=0.02`（推奨）/ 強め 0.04 / オフ。**品質**: 本番 30000（既定）/ 短時間 15000。
+- 学習後に **floater(a) 数を計測表示**（既定 ON）。LichtFeld 実行ファイルは自動検出（`%LICHTFELD_EXE%` → `F:\LichtFeld-Studio\...` → PATH、手動指定可）。
+- **前提**: NVIDIA GPU + LichtFeld Studio。設計書: `docs/superpowers/specs/2026-06-20-floaterclean-desktop-tool-design.md`。
+
+> 旧 `app/app.py`（Gradio・SOR 中心）は検証記録として残置。実用は FloaterClean Trainer を使用。
 
 ---
 
