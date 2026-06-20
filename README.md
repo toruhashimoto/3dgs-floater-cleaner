@@ -4,7 +4,7 @@
 
 > One-click Windows tool that reconstructs 3D Gaussian Splatting scenes with far fewer floaters — by **training with a validated geometry regularizer (`scale_reg`)**, not by pre-train point-cloud cleanup. Input is a RealityScan→COLMAP export.
 
-**ダウンロード → [Releases](https://github.com/toruhashimoto/sano-floater-cleanup/releases)**
+**ダウンロード → [Releases](https://github.com/toruhashimoto/3dgs-floater-cleaner/releases)**
 
 ---
 
@@ -20,7 +20,7 @@
 
 ## クイックスタート
 
-1. [Releases](https://github.com/toruhashimoto/sano-floater-cleanup/releases) から取得して展開（または本リポジトリをクローン）。
+1. [Releases](https://github.com/toruhashimoto/3dgs-floater-cleaner/releases) から取得して展開（または本リポジトリをクローン）。
 2. `app\run_desktop.bat` をダブルクリック（初回のみ Python 仮想環境を自動作成）。
    - デスクトップにショートカットを作るなら `powershell -ExecutionPolicy Bypass -File app\install_desktop_shortcut.ps1`
 3. **データフォルダ**（RealityScan→COLMAP：`images/` + `sparse/0`）を選択。
