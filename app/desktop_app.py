@@ -37,6 +37,9 @@ QUALITY = {
     "短時間 (15000 iter)": 15000,
 }
 
+# LichtFeld の進捗行 "... 3400/15000 | Loss: 0.0855 | Splats: 1000000" を拾う
+PROG_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*\|\s*Loss:\s*([\d.]+)\s*\|\s*Splats:\s*([\d,]+)")
+
 
 # --------------------------------------------------------------------------- #
 # GUI 非依存のロジック（単体テスト対象）                                          #
@@ -139,8 +142,9 @@ def measure_floaters(ply: str, sparse_dir: str):
 
 
 def run_training(cmd: list[str], log_path: str, on_line, should_stop) -> int:
-    """LichtFeld を subprocess 実行。各行を on_line(line) に渡しログにも書く。
-    should_stop() が True を返すと終了。返り値: returncode（中止時 -1）。"""
+    """LichtFeld を subprocess 実行。各行（\\r 進捗含む）を on_line(line) に渡しログにも書く。
+    should_stop() が True を返すと終了。返り値: returncode（中止時 -1）。
+    read1 でパイプを常時ドレインし、LichtFeld にバックプレッシャ（遅延）を与えない。"""
     os.makedirs(os.path.dirname(os.path.abspath(log_path)) or ".", exist_ok=True)
     env = dict(os.environ, PYTHONUTF8="1")
     with open(log_path, "w", encoding="utf-8", errors="replace") as lf:
@@ -148,18 +152,33 @@ def run_training(cmd: list[str], log_path: str, on_line, should_stop) -> int:
         lf.flush()
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, env=env)
+        pending = b""
         try:
-            for raw in iter(proc.stdout.readline, b""):
+            while True:
                 if should_stop():
                     proc.terminate()
                     on_line("[中止] 学習を停止しました。")
-                    proc.wait(timeout=10)
+                    try:
+                        proc.wait(timeout=10)
+                    except Exception:  # noqa: BLE001
+                        pass
                     return -1
-                line = raw.decode("utf-8", "replace").rstrip("\r\n")
-                if line:
-                    lf.write(line + "\n")
-                    lf.flush()
-                    on_line(line)
+                chunk = proc.stdout.read1(4096)  # \r 進捗も即時に拾う
+                if not chunk:
+                    break
+                pending += chunk
+                segs = re.split(rb"[\r\n]+", pending)
+                pending = segs.pop()  # 末尾は未完なので保持
+                for seg in segs:
+                    line = seg.decode("utf-8", "replace").strip()
+                    if line:
+                        lf.write(line + "\n")
+                        lf.flush()
+                        on_line(line)
+            tail = pending.decode("utf-8", "replace").strip()
+            if tail:
+                lf.write(tail + "\n")
+                on_line(tail)
         finally:
             if proc.stdout:
                 proc.stdout.close()
@@ -187,8 +206,14 @@ class DesktopApp:
         self.root = root
         self._stop = threading.Event()
         self._worker = None
+        # 進捗状態（ワーカースレッドが書き、GUI タイマー _tick が読む）
+        self._running = False
+        self._have_progress = False
+        self._latest_pct = 0
+        self._next_log_pct = 0
+        self._mode = "indeterminate"
         root.title("FloaterClean Trainer — 低フローター 3DGS 学習")
-        root.geometry("820x620")
+        root.geometry("820x640")
         pad = dict(padx=8, pady=4)
 
         frm = ttk.Frame(root)
@@ -287,13 +312,50 @@ class DesktopApp:
         self.log.see("end")
         self.log.configure(state="disabled")
 
+    def _on_train_line(self, ln):
+        """ワーカースレッドから呼ばれる。進捗は内部変数に貯め、GUI 反映は _tick(4Hz) と
+        10%刻みのログ追記に限定して負荷を一定に保つ。"""
+        m = PROG_RE.search(ln)
+        if m:
+            it, tot = int(m.group(1)), int(m.group(2))
+            pct = max(0, min(100, round(it * 100 / tot))) if tot else 0
+            self._latest_pct = pct
+            self._have_progress = True
+            if pct >= self._next_log_pct:   # 10% 刻みでログ/ステータスに反映
+                self._post(self._logln, ln)
+                self._post(self.status.set, f"学習中… {pct}%  ({it:,}/{tot:,})  Splats {m.group(4)}")
+                self._next_log_pct = (pct // 10 + 1) * 10
+        else:
+            self._post(self._logln, ln)
+
+    def _tick(self):
+        """250ms 周期で進捗バーを更新（再描画頻度の上限＝4Hz、LichtFeld の出力頻度に依らず一定）。"""
+        if not self._running:
+            return
+        if self._have_progress:
+            if self._mode != "determinate":
+                self.prog.stop()
+                self.prog.configure(mode="determinate", maximum=100)
+                self._mode = "determinate"
+            self.prog.configure(value=self._latest_pct)
+        self.root.after(250, self._tick)
+
     def _set_running(self, running):
         self.start_btn.configure(state="disabled" if running else "normal")
         self.stop_btn.configure(state="normal" if running else "disabled")
+        self._running = running
         if running:
+            self._have_progress = False
+            self._latest_pct = 0
+            self._next_log_pct = 0
+            self._mode = "indeterminate"
+            self.prog.configure(mode="indeterminate")
             self.prog.start(12)
+            self.root.after(250, self._tick)   # 進捗バーのポーリング開始
         else:
             self.prog.stop()
+            if self._mode == "determinate":
+                self.prog.configure(value=100)
 
     # ---- actions ----
     def _start(self):
@@ -320,7 +382,7 @@ class DesktopApp:
         self._stop.clear()
         self._set_running(True)
         self.open_btn.configure(state="disabled")
-        self.status.set(f"学習中… scale_reg={scale_reg} iter={iters}")
+        self.status.set(f"学習中… scale_reg={scale_reg} iter={iters}（データ読込中…）")
         self._logln(f"=== FloaterClean: scale_reg={scale_reg}, iter={iters}, data={data} ===")
 
         def work():
@@ -329,7 +391,7 @@ class DesktopApp:
                 cmd = build_command(exe, cfg, data, out, undistort)
                 self._post(self._logln, "$ " + " ".join(cmd))
                 rc = run_training(cmd, os.path.join(out, "train.log"),
-                                  on_line=lambda ln: self._post(self._logln, ln),
+                                  on_line=self._on_train_line,
                                   should_stop=self._stop.is_set)
                 if rc == -1:
                     self._post(self.status.set, "中止しました。")
@@ -341,11 +403,11 @@ class DesktopApp:
                 tail = f"✅ 完了: {ply}" if ply else "✅ 完了（.ply 未検出）"
                 if ply and measure:
                     self._post(self.status.set, "floater 計測中…")
-                    m = measure_floaters(ply, sparse)
-                    if m and "floater_a" in m:
-                        tail += f"  | floater(a)={m['floater_a']:,} / GS {m['total']:,}"
-                    elif m and "error" in m:
-                        tail += f"  | floater計測スキップ ({m['error'].splitlines()[0][:60]})"
+                    mm = measure_floaters(ply, sparse)
+                    if mm and "floater_a" in mm:
+                        tail += f"  | floater(a)={mm['floater_a']:,} / GS {mm['total']:,}"
+                    elif mm and "error" in mm:
+                        tail += f"  | floater計測スキップ ({mm['error'].splitlines()[0][:60]})"
                 self._post(self.status.set, tail)
                 self._post(self._logln, tail)
                 self._post(lambda: self.open_btn.configure(state="normal"))
