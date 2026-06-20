@@ -1,0 +1,13 @@
+# 必須
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.6
+gradio>=4.0
+pyyaml>=6.0
+
+# 推奨（ブリーフ §5 T3 が指定する Open3D の statistical_outlier_removal を使う場合）
+# 未インストールでも scipy による同一アルゴリズムのフォールバックで動作します。
+open3d>=0.17
+
+# 注: 一部ネットワーク環境では gradio が httpx[socks] を要求します。
+#   その場合は: pip install "httpx[socks]" socksio

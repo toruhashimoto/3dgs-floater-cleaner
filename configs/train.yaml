@@ -1,0 +1,38 @@
+# train.yaml — A/B 学習設定（T4）
+# LichtFeld Studio (gaussian_splatting_cuda) のヘッドレス学習を baseline と
+# cleaned_sor で「唯一の変数=点群クリーンアップの有無」にして回すための設定。
+#
+# 重要: baseline と cleaned で iter / seed / strategy / max_cap / resize を必ず同一にする。
+# このファイルはテンプレート。フラグ名は各自のビルドで `gaussian_splatting_cuda --help`
+# を実行して必ず確認すること（特に seed / eval / holdout は版により異なる）。
+
+binary: "gaussian_splatting_cuda"     # LichtFeld Studio の実行ファイル（PATH 上 or フルパス）
+
+common:
+  strategy: mcmc            # MCMC 戦略（フローター抑制で有利とされる）
+  iter: 15000               # A/B 比較用の短時間設定（本番は 30000）
+  max_cap: 1000000          # MCMC の最大ガウシアン数
+  resize_factor: 1          # 画像解像度係数（-r）
+  seed: 0                   # ★ --seed が無い版では固定方法を要確認（再現性に必須）
+  # 保留ビュー（PSNR/SSIM 用）: LichtFeld の eval/holdout 指定方法を要確認。
+  # 例) test ごとの hold-out 比率や images リストでの分割。
+
+runs:
+  baseline:
+    # baseline はオリジナル sano をそのまま使える（images/ + sparse/0 が揃っている）
+    data: "F:/RealityScan/sano"
+    output: "F:/RealityScan/sano/exp/train_baseline"
+  cleaned:
+    # cleaned は prepare_projects.py で images/ を共有した学習用プロジェクトを作ってから指定
+    data: "F:/RealityScan/sano/exp/cleaned_proj"
+    output: "F:/RealityScan/sano/exp/train_cleaned"
+
+# 生成されるコマンド（例）:
+#   gaussian_splatting_cuda -d F:/RealityScan/sano               -o .../train_baseline --strategy mcmc -i 15000 --max-cap 1000000 -r 1
+#   gaussian_splatting_cuda -d F:/RealityScan/sano/exp/cleaned_proj -o .../train_cleaned  --strategy mcmc -i 15000 --max-cap 1000000 -r 1
+
+compare:
+  tau_op: 0.05             # floater 指標(a) 不透明度しきい値
+  scale_frac: 0.02         # floater 指標(a) スケールしきい値（シーン対角比）
+  expand: 0.25             # floater 指標(b) カメラ凸包の膨張率
+  delta_psnr_min: -0.3     # 品質許容（完了条件 §1.5）

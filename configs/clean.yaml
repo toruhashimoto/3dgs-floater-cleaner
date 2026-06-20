@@ -1,0 +1,32 @@
+# clean.yaml — 学習前 SOR クリーンアップ設定（T3）
+# sor_clean.py / app のパラメータ。値は sano 実データで確定したもの。
+
+input:
+  # RealityScan が出力した COLMAP text 形式の sparse/0
+  sparse_dir: "F:/RealityScan/sano/sparse/0"
+
+output:
+  # exp 配下に cleaned_sor/ と metrics/ を作る
+  outdir: "F:/RealityScan/sano/exp"
+
+sor:
+  nb_neighbors: 20          # Open3D statistical_outlier_removal の近傍数
+  sweep: [1.5, 2.0, 3.0]    # std_ratio スイープ
+  adopt: 2.0                # cleaned_sor を生成する採用比率（sano で確定）
+
+roi:
+  # 車体/被写体 ROI。auto = カメラ凸包内部点の percentile bbox で推定。
+  # 明示指定する場合は bbox: [xmin, ymin, zmin, xmax, ymax, zmax]
+  mode: auto
+  percentile_lo: 2.5
+  percentile_hi: 97.5
+  max_removal_pct: 1.0      # ROI 内削除率の許容上限（完了条件 §1.3）
+  # sano 実測 ROI（auto, 参考値）:
+  #   min: [-11.762, -12.151, -8.632]  max: [17.162, -8.446, 3.941]
+
+# --- sano 実データの確定結果（2026-06-20 実行, Open3D 非使用=scipy同一実装）---
+# 総点数: 258,394
+# std_ratio=1.5 -> 削除 1,145 (0.44%), ROI内 0.00%
+# std_ratio=2.0 -> 削除   804 (0.31%), ROI内 0.00%   <= 採用
+# std_ratio=3.0 -> 削除   556 (0.22%), ROI内 0.00%
+# removed_points.ply: 92.9% が ROI 対角外、ROI中心からの距離 中央値114m/最大782m（空中・遠方ノイズ中心）

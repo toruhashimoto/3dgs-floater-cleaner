@@ -1,0 +1,30 @@
+# --- データ・実験出力（リポジトリに含めない）---
+exp/
+cleaned_sor/
+cleaned_proj/
+train_baseline/
+train_cleaned/
+*.ply
+*.jpg
+*.jpeg
+*.png
+sparse/
+images/
+# COLMAP の巨大テキスト
+points3D.txt
+images.txt
+# メトリクス出力（再生成可能）
+metrics/*.json
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# --- OS / エディタ ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
