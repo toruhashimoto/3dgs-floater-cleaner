@@ -1,4 +1,4 @@
-# FloaterClean Trainer — デスクトップツール 設計書
+# 3DGSフロータークリーナー (3DGS Floater Cleaner) — デスクトップツール 設計書
 
 作成日: 2026-06-20 / 対象リポジトリ: sano-floater-cleanup
 

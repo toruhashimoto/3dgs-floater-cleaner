@@ -1,170 +1,90 @@
-# sano-floater-cleanup
+# 3DGS Floater Cleaner（3DGSフロータークリーナー）
 
-学習前点群クリーンアップ（Statistical Outlier Removal, SOR）による **3D Gaussian Splatting (3DGS) のフローター低減を、再現可能な A/B 学習比較で定量検証する**ためのツール一式とデスクトップアプリ（Gradio）。
+3D Gaussian Splatting (3DGS) の **フローター（視点を変えると見える、空中に浮いた不要なガウシアン）を抑えて再構成する** Windows デスクトップツール。RealityScan で撮影・アライメントしたデータ（COLMAP 形式エクスポート）を選び、**1クリックでフローターの少ない `.ply` を出力**します。
 
-対象データは RealityScan が COLMAP text 形式で出力した `sano`（cameras / images / points3D）。
+> One-click Windows tool that reconstructs 3D Gaussian Splatting scenes with far fewer floaters — by **training with a validated geometry regularizer (`scale_reg`)**, not by pre-train point-cloud cleanup. Input is a RealityScan→COLMAP export.
 
-> （初期の主目的。**検証は完了済み** → 下記「結論」を参照）
-
----
-
-## ★ 結論（2026-06-20）と実用ツール
-
-検証の結果（詳細は **[FINDINGS.md](FINDINGS.md)**）:
-- **学習前 SOR / カメラ凸包外除去（init 側介入）は効かない** — MCMC が背景を再成長させ washes out（sano/toyota で確認）。
-- **効くのは学習時の幾何正則化 `scale_reg`** — LichtFeld で `scale_reg=0.02` にすると floater(a) を **−75〜82%**、PSNR/SSIM はほぼ不変（15k/30k・2データセットで再現）。`opacity_reg` は上げない（PSNR 劣化）。
-- floater(b)（凸包外 ~82–85%）は**正当な背景**で、深度正則化（外部 gsplat）でも減らない（`GSPLAT_SETUP.md`）。
-
-→ この成果を使う **デスクトップツール「FloaterClean Trainer」** を同梱（下記）。
-
-## FloaterClean Trainer（ワンクリック低フローター学習・推奨）
-
-RealityScan を COLMAP 形式でエクスポートしたフォルダ（`images/` + `sparse/0`、`F:\RealityScan\sano` と同構造）を選び、検証済み `scale_reg` 設定で LichtFeld をヘッドレス学習 → 低フローターの `.ply` を出力。ブラウザ不要のネイティブ窓（Tkinter）。
-
-```
-app\run_desktop.bat               # ダブルクリックで起動（初回は venv 自動作成）
-app\install_desktop_shortcut.ps1  # 任意: デスクトップにショートカット作成
-```
-- **入力**: RealityScan→COLMAP エクスポートフォルダ（アライメント再構成済み前提）。
-- **強度**: 標準 `scale_reg=0.02`（推奨）/ 強め 0.04 / オフ。**品質**: 本番 30000（既定）/ 短時間 15000。
-- 学習後に **floater(a) 数を計測表示**（既定 ON）。LichtFeld 実行ファイルは自動検出（`%LICHTFELD_EXE%` → `F:\LichtFeld-Studio\...` → PATH、手動指定可）。進捗バーは LichtFeld の `iter/総iter` を拾って**実%表示**（再描画は 4Hz 上限で低負荷）。
-- **SuperSplatで開く**: 完了後ボタンで出力 `.ply` を SuperSplat（編集・SOG 出力可）で確認。ローカル exe があれば直接起動（`%SUPERSPLAT_EXE%`／参照欄）、無ければ **web版**（`%SUPERSPLAT_URL%`, 既定 supersplat.playcanvas.com）を開き `.ply` を Explorer で選択表示（ドラッグ&ドロップ）。
-- **before/after 比較（任意・既定OFF・時間2倍）**: チェックすると baseline(`scale_reg=0.0042`)→本命 を順に学習し `floater(a): before→after (−XX%)` を並記。通常は OFF（after のみ）。
-- **前提**: NVIDIA GPU + LichtFeld Studio。設計書: `docs/superpowers/specs/2026-06-20-floaterclean-desktop-tool-design.md`。
-
-> 旧 `app/app.py`（Gradio・SOR 中心）は検証記録として残置。実用は FloaterClean Trainer を使用。
+**ダウンロード → [Releases](https://github.com/toruhashimoto/sano-floater-cleanup/releases)**
 
 ---
 
-## 何ができるか（工程と GPU 要否）
+## これは何をするツール？
 
-| 工程 | 内容 | GPU | このリポジトリ |
-|---|---|:---:|:---:|
-| T0 | データ実体の確認 | 不要 | ✅ アプリ/CLI |
-| T2 | baseline 点群メトリクス | 不要 | ✅ |
-| T3 | SOR スイープ・採用・removed_points.ply | 不要 | ✅ |
-| T4 | A/B 学習（LichtFeld Studio, MCMC） | **必要** | ⚙️ コマンド生成のみ |
-| T5 | フローター指標・PSNR/SSIM 比較・判定 | 不要 | ✅（学習出力を入力） |
+3DGS の学習結果には、どの視点からも観測が薄い領域に「フローター（浮遊ゴースト）」が現れます。本ツールは、検証で有効と確認した **学習時の幾何正則化 `scale_reg`** を使って学習し、**浮遊フローターを 75〜82% 低減**します（品質指標 PSNR/SSIM はほぼ不変）。
 
-CPU で完結する T0–T3 と T5 はこのツールで実行できる。**T4 の学習だけは CUDA GPU が必要**で、アプリが生成するコマンドをユーザーが実行する。
+- **入力**：RealityScan のアライメントを **COLMAP 形式でエクスポートしたフォルダ**（`images/` + `sparse/0/`）
+- **出力**：低フローターの 3DGS `.ply`
+- **学習エンジン**：[LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio)（MCMC）をヘッドレス実行
 
 ---
 
-## セットアップと起動
+## クイックスタート
 
-Windows はリポジトリ直下の `run.bat` をダブルクリック（venv 作成 → 依存導入 → アプリ起動）。Linux/macOS は `./run.sh`。
+1. [Releases](https://github.com/toruhashimoto/sano-floater-cleanup/releases) から取得して展開（または本リポジトリをクローン）。
+2. `app\run_desktop.bat` をダブルクリック（初回のみ Python 仮想環境を自動作成）。
+   - デスクトップにショートカットを作るなら `powershell -ExecutionPolicy Bypass -File app\install_desktop_shortcut.ps1`
+3. **データフォルダ**（RealityScan→COLMAP：`images/` + `sparse/0`）を選択。
+4. 既定のまま「学習開始」（強度=標準 `scale_reg=0.02` / 品質=本番 30000 / floater計測 ON）。
+5. 完了後：**「SuperSplatで開く」**で編集・SOG 出力、**「出力フォルダを開く」**で `.ply` を確認。
 
-手動の場合:
-
-```bash
-pip install -r requirements.txt
-python app/app.py     # http://127.0.0.1:7860 が開く
-```
-
-Open3D は任意。未導入でも scipy による同一アルゴリズムの SOR で動作する（ブリーフ §5 T3 の Open3D `statistical_outlier_removal` と同一定義）。
-
----
-
-## GitHub へ push（private）
-
-このフォルダはそのまま push できる状態（コードのみ。データ・実験出力は `.gitignore` 済み）。
-`gh` CLI があれば private リポジトリ作成から push まで自動:
-
-```bash
-# Windows: ダブルクリック
-push_to_github.bat
-# Linux/macOS:
-./push_to_github.sh
-```
-
-手動の場合:
-
-```bash
-cd sano-floater-cleanup
-git init && git add . && git commit -m "initial: sano-floater-cleanup"
-git branch -M main
-gh repo create sano-floater-cleanup --private --source=. --remote=origin --push
-# gh が無ければ GitHub で空の private repo を作成後:
-#   git remote add origin https://github.com/<account>/sano-floater-cleanup.git && git push -u origin main
-```
-
-## アプリの使い方
-
-1. **T0 データ確認** — `sparse/0` のパスを入れて点数・bbox・カメラ数を確認。
-2. **T2 メトリクス** — kNN 平均距離ヒストグラム、カメラ凸包外側点の割合などを計算し `metrics/baseline.json` に保存。
-3. **T3 SOR** — `std_ratio` をスイープして総削除率と **ROI 内削除率**（既定上限 1.0%）を表示。採用比率を決めて `cleaned_sor` と `removed_points.ply` を生成。3D 散布図で削除点が空中ノイズ中心であることを目視確認。
-4. **T4 学習コマンド生成** — `cleaned 学習プロジェクト` を準備（`images/` をリンクして 1.6GB の複製を回避）し、baseline と cleaned を**同一設定**で回す 2 本のコマンドを生成。これを GPU マシンで実行。
-5. **T5 A/B 比較** — 学習出力（`train_baseline` / `train_cleaned`）を指定し、フローター指標・総ガウシアン数・PSNR/SSIM を 1 表に集約して §1.5 の判定を表示。
+### 必要環境
+- Windows + NVIDIA GPU（CUDA）
+- [LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio)（自動検出。`%LICHTFELD_EXE%` か GUI の参照欄で指定可）
+- 標準 Python 3.x（Tk 同梱版）。floater 計測用の numpy/scipy はランチャが自動導入。
 
 ---
 
-## CLI（アプリを使わない場合）
+## 機能
 
-```bash
-# T2 メトリクス
-python scripts/cloud_metrics.py --sparse F:/RealityScan/sano/sparse/0 \
-    --out F:/RealityScan/sano/exp/metrics/baseline.json
-
-# T3 SOR スイープ + 採用(std_ratio=2.0)
-python scripts/sor_clean.py --sparse F:/RealityScan/sano/sparse/0 \
-    --outdir F:/RealityScan/sano/exp --nb-neighbors 20 \
-    --sweep 1.5,2.0,3.0 --adopt 2.0 --roi-max-removal 1.0
-
-# T4 前: cleaned 学習プロジェクト準備（images をリンク）
-python scripts/prepare_projects.py --orig F:/RealityScan/sano \
-    --cleaned-sparse F:/RealityScan/sano/exp/cleaned_sor/sparse/0 \
-    --proj F:/RealityScan/sano/exp/cleaned_proj
-
-# T4 学習（GPU。フラグは各自のビルドで --help 確認）
-gaussian_splatting_cuda -d F:/RealityScan/sano               -o F:/RealityScan/sano/exp/train_baseline --strategy mcmc -i 15000 --max-cap 1000000
-gaussian_splatting_cuda -d F:/RealityScan/sano/exp/cleaned_proj -o F:/RealityScan/sano/exp/train_cleaned  --strategy mcmc -i 15000 --max-cap 1000000
-
-# T5 比較
-python scripts/floater_metrics.py --ply F:/.../train_baseline/point_cloud.ply \
-    --sparse F:/RealityScan/sano/sparse/0 --out F:/.../metrics/floater_baseline.json
-python scripts/compare.py --baseline F:/.../train_baseline --cleaned F:/.../train_cleaned \
-    --sparse F:/RealityScan/sano/sparse/0 --out F:/.../metrics/report.md
-```
+- 検証済み `scale_reg` 設定で低フローター `.ply` を出力（強度プリセット：**標準 0.02** / 強め 0.04 / オフ）
+- **実%進捗バー**（再描画 4Hz 上限で低負荷）、学習後に **floater 数を自動計測**して表示
+- **SuperSplat 連携**：完了後ボタンで出力 `.ply` を SuperSplat（編集・SOG 出力可）で開く。ローカル exe があれば直接起動、無ければ web 版を開き `.ply` をエクスプローラで選択表示（ドラッグ&ドロップ）
+- **before/after 比較**（任意・既定 OFF・時間2倍）：baseline と並べて floater 削減率を表示
 
 ---
 
-## 構成
+## なぜこの方式なのか（検証で得た根拠）
+
+「学習前に点群を綺麗にすればフローターが減る」という直感は、A/B 検証の結果 **否定** されました。
+
+- **学習前の点群クリーンアップ（SOR・カメラ凸包外点の除去）は無効**。MCMC が学習中に背景構造を作り直すため、初期点をいじっても吸収される（washes out）。
+- **効くのは学習時の `scale_reg`**（各ガウシアンの世界スケールへの L1 ペナルティ）。大きく拡散したフローターを縮めて表面に密着 or 消滅させる。`scale_reg=0.02` で floater **−75〜82%**、PSNR/SSIM ほぼ不変。`opacity_reg` は併用しない（品質が落ち、指標を交絡させる）。
+- 2つの独立データセット × 短時間/本番（15000 / 30000 iter）× ノイズフロア測定で再現を確認。
+- カメラ凸包の外側に広がる「背景構造」は除去対象のフローターではなく正当なシーンで、点群除去でも深度正則化でも減りません（撮影/ROI の問題）。
+
+詳細レポート：**[FINDINGS.md](FINDINGS.md)**
+
+> 注：`sano` / `toyota` は検証に使った**データセット名**にすぎず、ツールの対象・用途とは無関係です。任意の RealityScan→COLMAP データに使えます。
+
+---
+
+## リポジトリ構成
 
 ```
-scripts/
-  colmap_io.py        COLMAP text / PLY の読み書き（track 保持の faithful 書き戻し）
-  geom.py             SOR・凸包内外判定・kNN・シーンスケール（Open3D / scipy フォールバック）
-  cloud_metrics.py    T1/T2 点群メトリクス
-  sor_clean.py        T3 SOR クリーンアップ＋スイープ＋ROI ゲート
-  floater_metrics.py  T1/T5 学習後フローター指標（opacity×scale, 凸包外側）
-  compare.py          T5 A/B 比較と §1.5 判定
-  prepare_projects.py T4 前の学習プロジェクト準備（images リンク）
-  make_synthetic.py   GPU 不要の自己検証用 合成 COLMAP / 合成 3DGS .ply 生成
+app/
+  desktop_app.py              デスクトップ本体（Tkinter）
+  run_desktop.bat             ダブルクリック起動ランチャ
+  install_desktop_shortcut.ps1 デスクトップショートカット作成（任意）
+  app.py                      旧 Gradio 検証 UI（研究記録として残置）
 configs/
-  clean.yaml          SOR パラメータ（sano 実測値つき）
-  train.yaml          A/B 学習設定テンプレート
-app/app.py            Gradio デスクトップ UI
-run.bat / run.sh      起動スクリプト
+  lichtfeld_scalereg02_prod30k.json  推奨学習設定（scale_reg=0.02, 30000 iter）
+  lichtfeld_scalereg02.json          同（短時間 15000 iter）
+scripts/                       検証ハーネス（floater 指標 / A-B 比較 / COLMAP・PLY I/O 等）
+tests/                         ユニットテスト
+FINDINGS.md                    検証の結論（floater(a) は scale_reg で解決 / floater(b) は背景）
+GSPLAT_SETUP.md                深度正則化(gsplat)実験の再現メモ（上級・任意）
+docs/superpowers/specs/        ツールの設計書
 ```
+データ（画像・COLMAP）と学習出力はリポジトリに含めません（`.gitignore`）。
 
 ---
 
-## 指標の定義（操作的定義, ブリーフ §4）
+## 開発者向け：検証の再現
 
-- **フローター指標(a)**: `sigmoid(opacity) < τ_op`(既定 0.05) かつ `max(exp(scale)) > σ`(既定: シーン対角の 2%) のガウシアン数。
-- **フローター指標(b)**: カメラ位置の凸包を 25% 膨張させた領域の外側に中心を持つガウシアン数。
-- **品質**: 保留ビューの PSNR / SSIM、総ガウシアン数。
-- **判定(§1.5)**: フローター指標(a) が改善し、**かつ** ΔPSNR ≥ -0.3dB なら PASS。
+研究ハーネス（点群クリーンアップ・A/B 学習比較・floater 指標）は `scripts/` にあります。ユニットテストは `python tests/test_desktop_app.py`。検証手順と数値は [FINDINGS.md](FINDINGS.md)、Blackwell GPU で gsplat を用いた深度実験は [GSPLAT_SETUP.md](GSPLAT_SETUP.md) を参照。
 
-3DGS の .ply は opacity を logit、scale を log で格納する慣例に従い、`floater_metrics.py` 内で `sigmoid` / `exp` を適用する。
+## クレジット
+- 学習エンジン：[LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio)（MrNeRF）
+- ビューア／編集・SOG 出力：[SuperSplat](https://github.com/playcanvas/supersplat)（PlayCanvas）
 
----
-
-## sano 実データの確定結果（2026-06-20, CPU 工程）
-
-詳細は [RESULTS.md](RESULTS.md)。要点:
-
-- 258,394 点 / 3,297 画像。**スパース点の 87.5% がカメラ凸包の外側**（被写体周囲を超えた遠方/背景構造が多い）。
-- SOR(nb=20): std_ratio 1.5 / 2.0 / 3.0 で総削除 0.44% / 0.31% / 0.22%、**ROI 内削除はいずれも 0.00%**。採用 std=2.0（804 点削除）。
-- removed_points.ply は **92.9% が ROI 対角の外**、ROI 中心からの距離 中央値 114m / 最大 782m。空中・遠方ノイズ中心であることを確認。
-- **重要**: フローター低減効果は T4/T5 の A/B 学習でしか確認できない（未実施＝要 GPU）。「点が削れた」ことを成功と早合点しない。
+各ソフトウェアのライセンスはそれぞれのプロジェクトに従ってください。

@@ -1,4 +1,4 @@
-"""FloaterClean Trainer — ワンクリック低フローター 3DGS 学習（Tkinter デスクトップ）。
+"""3DGSフロータークリーナー (3DGS Floater Cleaner) — ワンクリック低フローター 3DGS 学習（Tkinter デスクトップ）。
 
 RealityScan のアライメントを COLMAP 形式でエクスポートしたフォルダ（images/ + sparse/0、
 F:/RealityScan/sano と同一構造）を選び、検証済み `scale_reg` 設定で LichtFeld をヘッドレス
@@ -227,7 +227,7 @@ class DesktopApp:
         self._latest_pct = 0
         self._next_log_pct = 0
         self._mode = "indeterminate"
-        root.title("FloaterClean Trainer — 低フローター 3DGS 学習")
+        root.title("3DGSフロータークリーナー — 低フローター 3DGS 学習")
         root.geometry("860x660")
         pad = dict(padx=8, pady=4)
 
@@ -434,7 +434,7 @@ class DesktopApp:
         self.ss_btn.configure(state="disabled")
         self._last_ply = None
         self.status.set(f"学習中… scale_reg={scale_reg} iter={iters}（データ読込中…）")
-        self._logln(f"=== FloaterClean: scale_reg={scale_reg}, iter={iters}, "
+        self._logln(f"=== 3DGS Floater Cleaner: scale_reg={scale_reg}, iter={iters}, "
                     f"compare={compare}, data={data} ===")
 
         def run_phase(label, scale, odir):

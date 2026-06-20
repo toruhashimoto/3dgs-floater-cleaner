@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  FloaterClean Trainer launcher (double-click to start)
+REM  3DGS Floater Cleaner launcher (double-click to start)
 REM  ASCII-only on purpose: avoids cp932 mojibake on JP Windows.
 REM  Uses a local venv (tkinter comes from the base Python).
 REM ============================================================
@@ -33,7 +33,7 @@ if errorlevel 1 (
   python -m pip install --quiet --disable-pip-version-check numpy scipy
 )
 
-echo [run] FloaterClean Trainer ...
+echo [run] 3DGS Floater Cleaner ...
 python "%~dp0desktop_app.py"
 set "RC=%errorlevel%"
 endlocal
