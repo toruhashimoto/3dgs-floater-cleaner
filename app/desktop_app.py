@@ -25,6 +25,8 @@ _CONFIGS = os.path.join(_REPO, "configs")
 BASE_CONFIG = os.path.join(_CONFIGS, "lichtfeld_scalereg02_prod30k.json")
 
 DEFAULT_LICHTFELD = r"F:\LichtFeld-Studio\build\Release\LichtFeld-Studio.exe"
+DEFAULT_SUPERSPLAT_URL = "https://supersplat.playcanvas.com/"
+BASELINE_SCALE_REG = 0.0042  # before/after 比較の baseline 強度（mcmc 既定相当）
 
 # プリセット（強度）と品質
 PRESETS = {
@@ -50,6 +52,18 @@ def locate_lichtfeld(explicit: str | None = None) -> str | None:
         if cand and os.path.isfile(cand):
             return cand
     for name in ("LichtFeld-Studio", "LichtFeld-Studio.exe", "gaussian_splatting_cuda"):
+        hit = shutil.which(name)
+        if hit:
+            return hit
+    return None
+
+
+def locate_supersplat(explicit: str | None = None) -> str | None:
+    """SuperSplat のローカル実行ファイルを解決（手動指定 → $SUPERSPLAT_EXE → PATH）。無ければ None。"""
+    for cand in (explicit, os.environ.get("SUPERSPLAT_EXE")):
+        if cand and os.path.isfile(cand):
+            return cand
+    for name in ("SuperSplat", "SuperSplat.exe", "supersplat", "supersplat.exe"):
         hit = shutil.which(name)
         if hit:
             return hit
@@ -128,7 +142,7 @@ def find_output_ply(out_dir: str) -> str | None:
 
 
 def measure_floaters(ply: str, sparse_dir: str):
-    """出力 .ply の floater(a) 数を計測。numpy/scipy 無ければ None。"""
+    """出力 .ply の floater(a) 数を計測。numpy/scipy 無ければ error を返す。"""
     try:
         if _SCRIPTS not in sys.path:
             sys.path.insert(0, _SCRIPTS)
@@ -206,6 +220,7 @@ class DesktopApp:
         self.root = root
         self._stop = threading.Event()
         self._worker = None
+        self._last_ply = None
         # 進捗状態（ワーカースレッドが書き、GUI タイマー _tick が読む）
         self._running = False
         self._have_progress = False
@@ -213,33 +228,34 @@ class DesktopApp:
         self._next_log_pct = 0
         self._mode = "indeterminate"
         root.title("FloaterClean Trainer — 低フローター 3DGS 学習")
-        root.geometry("820x640")
+        root.geometry("860x660")
         pad = dict(padx=8, pady=4)
 
         frm = ttk.Frame(root)
         frm.pack(fill="x", **pad)
 
-        # データフォルダ
         ttk.Label(frm, text="データフォルダ (RealityScan→COLMAP: images/ + sparse/0)").grid(row=0, column=0, sticky="w", columnspan=3)
         self.data_var = tk.StringVar()
-        ttk.Entry(frm, textvariable=self.data_var, width=80).grid(row=1, column=0, columnspan=2, sticky="we")
+        ttk.Entry(frm, textvariable=self.data_var, width=84).grid(row=1, column=0, columnspan=2, sticky="we")
         ttk.Button(frm, text="参照…", command=self._pick_data).grid(row=1, column=2, sticky="e")
 
-        # 出力フォルダ
         ttk.Label(frm, text="出力フォルダ").grid(row=2, column=0, sticky="w", columnspan=3)
         self.out_var = tk.StringVar()
-        ttk.Entry(frm, textvariable=self.out_var, width=80).grid(row=3, column=0, columnspan=2, sticky="we")
+        ttk.Entry(frm, textvariable=self.out_var, width=84).grid(row=3, column=0, columnspan=2, sticky="we")
         ttk.Button(frm, text="参照…", command=self._pick_out).grid(row=3, column=2, sticky="e")
 
-        # LichtFeld
         ttk.Label(frm, text="LichtFeld 実行ファイル").grid(row=4, column=0, sticky="w", columnspan=3)
         self.exe_var = tk.StringVar(value=locate_lichtfeld() or "")
-        ttk.Entry(frm, textvariable=self.exe_var, width=80).grid(row=5, column=0, columnspan=2, sticky="we")
+        ttk.Entry(frm, textvariable=self.exe_var, width=84).grid(row=5, column=0, columnspan=2, sticky="we")
         ttk.Button(frm, text="参照…", command=self._pick_exe).grid(row=5, column=2, sticky="e")
+
+        ttk.Label(frm, text="SuperSplat 実行ファイル（任意・空ならweb版を使用）").grid(row=6, column=0, sticky="w", columnspan=3)
+        self.ss_var = tk.StringVar(value=locate_supersplat() or "")
+        ttk.Entry(frm, textvariable=self.ss_var, width=84).grid(row=7, column=0, columnspan=2, sticky="we")
+        ttk.Button(frm, text="参照…", command=self._pick_ss).grid(row=7, column=2, sticky="e")
 
         frm.columnconfigure(0, weight=1)
 
-        # オプション行
         opt = ttk.Frame(root)
         opt.pack(fill="x", **pad)
         ttk.Label(opt, text="強度").grid(row=0, column=0, sticky="w")
@@ -253,8 +269,9 @@ class DesktopApp:
         ttk.Checkbutton(opt, text="学習後に floater 数を計測", variable=self.measure_var).grid(row=1, column=0, columnspan=2, sticky="w")
         self.undistort_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(opt, text="歪み補正 (--undistort)", variable=self.undistort_var).grid(row=1, column=2, columnspan=2, sticky="w")
+        self.compare_var = tk.BooleanVar(value=False)  # before/after は既定 OFF（時間2倍）
+        ttk.Checkbutton(opt, text="比較用に baseline も学習（before/after・時間2倍）", variable=self.compare_var).grid(row=2, column=0, columnspan=4, sticky="w")
 
-        # ボタン
         btns = ttk.Frame(root)
         btns.pack(fill="x", **pad)
         self.start_btn = ttk.Button(btns, text="学習開始", command=self._start)
@@ -263,14 +280,14 @@ class DesktopApp:
         self.stop_btn.pack(side="left", padx=6)
         self.open_btn = ttk.Button(btns, text="出力フォルダを開く", command=self._open_out, state="disabled")
         self.open_btn.pack(side="left")
+        self.ss_btn = ttk.Button(btns, text="SuperSplatで開く", command=self._open_supersplat, state="disabled")
+        self.ss_btn.pack(side="left", padx=6)
 
-        # 進捗
         self.prog = ttk.Progressbar(root, mode="indeterminate")
         self.prog.pack(fill="x", **pad)
         self.status = tk.StringVar(value="待機中" + ("" if _has_gpu() else "  ⚠️ GPU(nvidia-smi)未検出"))
         ttk.Label(root, textvariable=self.status).pack(fill="x", padx=8)
 
-        # ログ
         self.log = scrolledtext.ScrolledText(root, height=20, state="disabled", wrap="none")
         self.log.pack(fill="both", expand=True, padx=8, pady=6)
 
@@ -296,6 +313,13 @@ class DesktopApp:
         if f:
             self.exe_var.set(f)
 
+    def _pick_ss(self):
+        from tkinter import filedialog
+        f = filedialog.askopenfilename(title="SuperSplat 実行ファイルを選択",
+                                       filetypes=[("exe", "*.exe"), ("all", "*.*")])
+        if f:
+            self.ss_var.set(f)
+
     def _autofill_out(self):
         d = self.data_var.get().strip()
         if d and not self.out_var.get().strip():
@@ -305,6 +329,26 @@ class DesktopApp:
         out = self.out_var.get().strip()
         if out and os.path.isdir(out):
             os.startfile(out)  # noqa: B606 (Windows)
+
+    def _open_supersplat(self):
+        ply = self._last_ply
+        if not ply or not os.path.isfile(ply):
+            return
+        exe = locate_supersplat(self.ss_var.get().strip() or None)
+        if exe:
+            try:
+                subprocess.Popen([exe, ply])
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        # web 版: SuperSplat をブラウザで開き、.ply を Explorer で選択表示（ドラッグ&ドロップ用）
+        import webbrowser
+        webbrowser.open(os.environ.get("SUPERSPLAT_URL", DEFAULT_SUPERSPLAT_URL))
+        try:
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(ply)])
+        except Exception:  # noqa: BLE001
+            pass
+        self._logln("SuperSplat(web) を開きました。Explorer で選択表示した .ply をブラウザにドラッグ&ドロップしてください。")
 
     def _logln(self, s):
         self.log.configure(state="normal")
@@ -323,13 +367,13 @@ class DesktopApp:
             self._have_progress = True
             if pct >= self._next_log_pct:   # 10% 刻みでログ/ステータスに反映
                 self._post(self._logln, ln)
-                self._post(self.status.set, f"学習中… {pct}%  ({it:,}/{tot:,})  Splats {m.group(4)}")
+                self._post(self.status.set, f"{self._phase}学習中… {pct}%  ({it:,}/{tot:,})  Splats {m.group(4)}")
                 self._next_log_pct = (pct // 10 + 1) * 10
         else:
             self._post(self._logln, ln)
 
     def _tick(self):
-        """250ms 周期で進捗バーを更新（再描画頻度の上限＝4Hz、LichtFeld の出力頻度に依らず一定）。"""
+        """250ms 周期で進捗バーを更新（再描画上限＝4Hz、LichtFeld の出力頻度に依らず一定負荷）。"""
         if not self._running:
             return
         if self._have_progress:
@@ -340,18 +384,21 @@ class DesktopApp:
             self.prog.configure(value=self._latest_pct)
         self.root.after(250, self._tick)
 
+    def _reset_progress(self):
+        self._have_progress = False
+        self._latest_pct = 0
+        self._next_log_pct = 0
+
     def _set_running(self, running):
         self.start_btn.configure(state="disabled" if running else "normal")
         self.stop_btn.configure(state="normal" if running else "disabled")
         self._running = running
         if running:
-            self._have_progress = False
-            self._latest_pct = 0
-            self._next_log_pct = 0
+            self._reset_progress()
             self._mode = "indeterminate"
             self.prog.configure(mode="indeterminate")
             self.prog.start(12)
-            self.root.after(250, self._tick)   # 進捗バーのポーリング開始
+            self.root.after(250, self._tick)
         else:
             self.prog.stop()
             if self._mode == "determinate":
@@ -378,39 +425,72 @@ class DesktopApp:
         iters = QUALITY[self.quality_var.get()]
         undistort = self.undistort_var.get()
         measure = self.measure_var.get()
+        compare = self.compare_var.get()
+        self._phase = ""
 
         self._stop.clear()
         self._set_running(True)
         self.open_btn.configure(state="disabled")
+        self.ss_btn.configure(state="disabled")
+        self._last_ply = None
         self.status.set(f"学習中… scale_reg={scale_reg} iter={iters}（データ読込中…）")
-        self._logln(f"=== FloaterClean: scale_reg={scale_reg}, iter={iters}, data={data} ===")
+        self._logln(f"=== FloaterClean: scale_reg={scale_reg}, iter={iters}, "
+                    f"compare={compare}, data={data} ===")
+
+        def run_phase(label, scale, odir):
+            self._phase = label + " "
+            self._post(self._reset_progress)
+            self._post(self.status.set, f"{label} 学習中…")
+            self._post(self._logln, f"--- {label}: scale_reg={scale} -> {odir} ---")
+            cfg = build_config(scale, iters, odir)
+            cmd = build_command(exe, cfg, data, odir, undistort)
+            self._post(self._logln, "$ " + " ".join(cmd))
+            rc = run_training(cmd, os.path.join(odir, "train.log"),
+                              on_line=self._on_train_line, should_stop=self._stop.is_set)
+            if rc != 0:
+                return rc, None, None
+            ply = find_output_ply(odir)
+            fa = None
+            if ply and measure:
+                self._post(self.status.set, f"{label}: floater 計測中…")
+                mm = measure_floaters(ply, sparse)
+                if mm and "floater_a" in mm:
+                    fa = mm["floater_a"]
+                elif mm and "error" in mm:
+                    self._post(self._logln, f"  floater計測スキップ: {mm['error'].splitlines()[0][:80]}")
+            return rc, ply, fa
 
         def work():
             try:
-                cfg = build_config(scale_reg, iters, out)
-                cmd = build_command(exe, cfg, data, out, undistort)
-                self._post(self._logln, "$ " + " ".join(cmd))
-                rc = run_training(cmd, os.path.join(out, "train.log"),
-                                  on_line=self._on_train_line,
-                                  should_stop=self._stop.is_set)
+                before_fa = None
+                if compare:
+                    rc, _plyb, before_fa = run_phase("比較用 baseline", BASELINE_SCALE_REG,
+                                                     out.rstrip("\\/") + "_baseline_cmp")
+                    if rc == -1:
+                        self._post(self.status.set, "中止しました。")
+                        return
+                    if rc != 0:
+                        self._post(self.status.set, f"⚠️ baseline 学習が異常終了 (code {rc})。ログ確認。")
+                        return
+                rc, ply, after_fa = run_phase(f"本命(scale_reg={scale_reg})", scale_reg, out)
                 if rc == -1:
                     self._post(self.status.set, "中止しました。")
                     return
                 if rc != 0:
                     self._post(self.status.set, f"⚠️ 学習が異常終了 (code {rc})。ログ確認。")
                     return
-                ply = find_output_ply(out)
+                self._last_ply = ply
                 tail = f"✅ 完了: {ply}" if ply else "✅ 完了（.ply 未検出）"
-                if ply and measure:
-                    self._post(self.status.set, "floater 計測中…")
-                    mm = measure_floaters(ply, sparse)
-                    if mm and "floater_a" in mm:
-                        tail += f"  | floater(a)={mm['floater_a']:,} / GS {mm['total']:,}"
-                    elif mm and "error" in mm:
-                        tail += f"  | floater計測スキップ ({mm['error'].splitlines()[0][:60]})"
+                if after_fa is not None:
+                    tail += f"  | floater(a)={after_fa:,}"
+                    if before_fa:
+                        d = (after_fa - before_fa) / before_fa * 100.0
+                        tail += f"  (before {before_fa:,} → after {after_fa:,}, {d:+.0f}%)"
                 self._post(self.status.set, tail)
                 self._post(self._logln, tail)
                 self._post(lambda: self.open_btn.configure(state="normal"))
+                if ply:
+                    self._post(lambda: self.ss_btn.configure(state="normal"))
             except Exception as e:  # noqa: BLE001
                 self._post(self.status.set, f"⚠️ エラー: {e}")
                 self._post(self._logln, f"⚠️ エラー: {e}")

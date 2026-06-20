@@ -27,7 +27,9 @@ app\install_desktop_shortcut.ps1  # 任意: デスクトップにショートカ
 ```
 - **入力**: RealityScan→COLMAP エクスポートフォルダ（アライメント再構成済み前提）。
 - **強度**: 標準 `scale_reg=0.02`（推奨）/ 強め 0.04 / オフ。**品質**: 本番 30000（既定）/ 短時間 15000。
-- 学習後に **floater(a) 数を計測表示**（既定 ON）。LichtFeld 実行ファイルは自動検出（`%LICHTFELD_EXE%` → `F:\LichtFeld-Studio\...` → PATH、手動指定可）。
+- 学習後に **floater(a) 数を計測表示**（既定 ON）。LichtFeld 実行ファイルは自動検出（`%LICHTFELD_EXE%` → `F:\LichtFeld-Studio\...` → PATH、手動指定可）。進捗バーは LichtFeld の `iter/総iter` を拾って**実%表示**（再描画は 4Hz 上限で低負荷）。
+- **SuperSplatで開く**: 完了後ボタンで出力 `.ply` を SuperSplat（編集・SOG 出力可）で確認。ローカル exe があれば直接起動（`%SUPERSPLAT_EXE%`／参照欄）、無ければ **web版**（`%SUPERSPLAT_URL%`, 既定 supersplat.playcanvas.com）を開き `.ply` を Explorer で選択表示（ドラッグ&ドロップ）。
+- **before/after 比較（任意・既定OFF・時間2倍）**: チェックすると baseline(`scale_reg=0.0042`)→本命 を順に学習し `floater(a): before→after (−XX%)` を並記。通常は OFF（after のみ）。
 - **前提**: NVIDIA GPU + LichtFeld Studio。設計書: `docs/superpowers/specs/2026-06-20-floaterclean-desktop-tool-design.md`。
 
 > 旧 `app/app.py`（Gradio・SOR 中心）は検証記録として残置。実用は FloaterClean Trainer を使用。
