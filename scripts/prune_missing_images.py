@@ -20,7 +20,7 @@
   python scripts/prune_missing_images.py <colmap_dir> --dry-run  # 確認のみ（書換なし）
 
   <colmap_dir> は images/ と sparse/0/ を含むフォルダ
-  （例: D:/.../dataset/colmap）。
+  （例: D:/path/to/your_dataset/colmap）。
 
 GUI からの利用:
   app/desktop_app.py は学習開始時に欠落を検出すると、確認のうえ apply_prune() を
