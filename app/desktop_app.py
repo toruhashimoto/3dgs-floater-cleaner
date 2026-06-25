@@ -1,8 +1,11 @@
-"""3DGSフロータークリーナー (3DGS Floater Cleaner) — ワンクリック低フローター 3DGS 学習（Tkinter デスクトップ）。
+"""3DGSフロータークリーナー (3DGS Floater Cleaner) — ワンクリック高詳細・低フローター 3DGS 学習（Tkinter デスクトップ）。
 
-RealityScan のアライメントを COLMAP 形式でエクスポートしたフォルダ（images/ + sparse/0、
-F:/RealityScan/sano と同一構造）を選び、検証済み `scale_reg` 設定で LichtFeld をヘッドレス
-学習して、フローターを抑えた .ply を出力する。学習後に floater(a) 数を計測表示する。
+RealityScan のアライメントを COLMAP 形式でエクスポートしたフォルダ（images/ + sparse/0）を選び、
+LichtFeld を MRNF 戦略でヘッドレス学習して .ply を出力する。詳細度プリセット（30k/1M〜150k/8M、
+既定 105k/5M）と幾何正則化 scale_reg（フローター抑制の軸）を選べる。学習後に floater(a) 数を計測表示。
+
+注意: floater 低減の検証(scale_reg=0.02 → −82%)は MCMC での実測値。MRNF は高精細を優先する設定で
+低フローターは未検証（数値は計測するが保証しない）。検証の詳細は FINDINGS.md。
 
 設計: docs/superpowers/specs/2026-06-20-floaterclean-desktop-tool-design.md
 起動: app/run_desktop.bat（ダブルクリック）
@@ -24,20 +27,37 @@ _SCRIPTS = os.path.join(_REPO, "scripts")
 _CONFIGS = os.path.join(_REPO, "configs")
 BASE_CONFIG = os.path.join(_CONFIGS, "lichtfeld_scalereg02_prod30k.json")
 
-DEFAULT_LICHTFELD = r"F:\LichtFeld-Studio\build\Release\LichtFeld-Studio.exe"
+# 自動検出する LichtFeld 実行ファイルの既定候補（環境差を吸収。先頭から順に存在チェック）
+DEFAULT_LICHTFELD_CANDIDATES = (
+    r"D:\Apps\LichtFeld-Studio\build\Release\LichtFeld-Studio.exe",
+    r"F:\LichtFeld-Studio\build\Release\LichtFeld-Studio.exe",
+)
 DEFAULT_SUPERSPLAT_URL = "https://supersplat.playcanvas.com/"
 BASELINE_SCALE_REG = 0.0042  # before/after 比較の baseline 強度（mcmc 既定相当）
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp")
 
-# プリセット（強度）と品質
+# 学習戦略: 高詳細向けに MRNF を採用。
+# 注意: floater 低減の検証(scale_reg=0.02 → −82%)は MCMC での実測値。MRNF では未検証で、
+# 低フローターより高精細を優先する設定（floater 数は計測表示するが保証はしない）。
+STRATEGY = "mrnf"
+
+# 強度プリセット = 幾何正則化 scale_reg（フローター抑制の軸）。詳細度とは独立に選べる。
 PRESETS = {
     "標準 (scale_reg=0.02・推奨)": 0.02,
     "強め (0.04・floater最大減/PSNR微低)": 0.04,
     "オフ (0.0042・baseline相当)": 0.0042,
 }
-QUALITY = {
-    "本番 (30000 iter)": 30000,
-    "短時間 (15000 iter)": 15000,
+
+# 詳細度プリセット = (iterations, max_cap[最大ガウシアン数])。高詳細ほど高負荷・長時間。
+# 既定は 105k/5M（最高詳細）。stop_refine は build_config が iterations 比で自動延長する。
+DETAIL = {
+    "標準 30k/1M（最速）": (30000, 1_000_000),
+    "高品質 60k/2M": (60000, 2_000_000),
+    "高詳細 90k/3.5M": (90000, 3_500_000),
+    "最高詳細 105k/5M（推奨）": (105000, 5_000_000),
+    "エクストリーム 150k/8M": (150000, 8_000_000),
 }
+DETAIL_DEFAULT = "最高詳細 105k/5M（推奨）"
 
 # LichtFeld の進捗行 "... 3400/15000 | Loss: 0.0855 | Splats: 1000000" を拾う
 PROG_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*\|\s*Loss:\s*([\d.]+)\s*\|\s*Splats:\s*([\d,]+)")
@@ -48,7 +68,7 @@ PROG_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*\|\s*Loss:\s*([\d.]+)\s*\|\s*Splats:\
 # --------------------------------------------------------------------------- #
 def locate_lichtfeld(explicit: str | None = None) -> str | None:
     """LichtFeld 実行ファイルを解決。手動指定 → $LICHTFELD_EXE → 既定パス → PATH。"""
-    for cand in (explicit, os.environ.get("LICHTFELD_EXE"), DEFAULT_LICHTFELD):
+    for cand in (explicit, os.environ.get("LICHTFELD_EXE"), *DEFAULT_LICHTFELD_CANDIDATES):
         if cand and os.path.isfile(cand):
             return cand
     for name in ("LichtFeld-Studio", "LichtFeld-Studio.exe", "gaussian_splatting_cuda"):
@@ -75,6 +95,29 @@ def _has_member(sparse_dir: str, stem: str) -> bool:
             or os.path.isfile(os.path.join(sparse_dir, stem + ".bin")))
 
 
+def referenced_image_names(sparse_dir: str):
+    """sparse モデルが参照する画像ファイル名の一覧を返す。
+    images.txt（テキスト形式）を低メモリでストリーミング解析する。
+    .txt が無い（.bin のみ等）で軽量解析できない場合は None（事前検査スキップ）。
+
+    images.txt は1画像2行。姿勢行 "IMAGE_ID QW..QZ TX..TZ CAMERA_ID NAME" の
+    末尾トークンが画像名。POINTS2D 行の末尾は整数 POINT3D_ID なので拡張子では拾わない。
+    """
+    txt = os.path.join(sparse_dir, "images.txt")
+    if not os.path.isfile(txt):
+        return None
+    names = []
+    with open(txt, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            s = line.strip()
+            if not s or s[0] == "#":
+                continue
+            last = s.rsplit(None, 1)[-1]
+            if last.lower().endswith(IMAGE_EXTS):
+                names.append(last)
+    return names
+
+
 def validate_dataset(data_dir: str):
     """RealityScan→COLMAP エクスポート構造を検証。
     返り値: (ok: bool, message: str, sparse_dir: str | None)"""
@@ -83,9 +126,8 @@ def validate_dataset(data_dir: str):
     images = os.path.join(data_dir, "images")
     if not os.path.isdir(images):
         return False, f"images/ が見つかりません: {images}", None
-    exts = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp")
-    has_img = any(f.lower().endswith(exts) for f in os.listdir(images))
-    if not has_img:
+    img_files = os.listdir(images)
+    if not any(f.lower().endswith(IMAGE_EXTS) for f in img_files):
         return False, "images/ に画像がありません。", None
     sparse = os.path.join(data_dir, "sparse", "0")
     if not os.path.isdir(sparse):
@@ -95,17 +137,71 @@ def validate_dataset(data_dir: str):
         if not _has_member(sparse, stem):
             return False, (f"sparse/0/{stem}.txt が見つかりません。\n"
                            "RealityScan を COLMAP 形式でエクスポートしてください。"), None
+    # sparse が参照する画像が images/ に実在するか。
+    # LichtFeld は参照画像が1枚でも欠けると [Path not found] で abort するため、
+    # 学習を起動する前にここで検知してわかりやすく通知する。
+    refs = referenced_image_names(sparse)
+    if refs:
+        present = {f.lower() for f in img_files}
+        missing = [n for n in refs if n.lower() not in present]
+        if missing:
+            head = "、".join(missing[:8])
+            more = f" ほか{len(missing) - 8}枚" if len(missing) > 8 else ""
+            return False, (
+                f"sparse モデルが参照する画像のうち {len(missing)}/{len(refs)} 枚が "
+                f"images/ にありません:\n  {head}{more}\n\n"
+                "・データのコピー漏れの可能性 → 不足画像を images/ に補完\n"
+                "・または RealityScan で COLMAP を再エクスポート（画像出力ON）\n"
+                "・欠落が数枚なら scripts/prune_missing_images.py で該当エントリを\n"
+                "  除去すれば残りの画像で学習できます（失うのは欠落ビューのみ）。"
+            ), None
     return True, "OK", sparse
 
 
+def missing_referenced_images(data_dir: str):
+    """images/ に存在しない sparse 参照画像名の一覧を返す（GUI の自動修復判定用）。
+    RealityScan が稀に起こす「数枚のコピー漏れ」だけを修復対象として拾うため、
+    次の場合は空リストを返す（prune 対象にしない）:
+      - images/ に画像が皆無（通常の構造エラーとして扱う）
+      - images.txt が解析不能（.bin のみ等）
+      - 参照画像が「全部」欠落（フォルダ取り違え等の異常＝prune では直せない）
+    """
+    images = os.path.join(data_dir, "images")
+    sparse = os.path.join(data_dir, "sparse", "0")
+    if not (os.path.isdir(images) and os.path.isdir(sparse)):
+        return []
+    img_files = os.listdir(images)
+    if not any(f.lower().endswith(IMAGE_EXTS) for f in img_files):
+        return []
+    refs = referenced_image_names(sparse)
+    if not refs:
+        return []
+    present = {f.lower() for f in img_files}
+    missing = [n for n in refs if n.lower() not in present]
+    if not missing or len(missing) == len(refs):
+        return []
+    return missing
+
+
 def build_config(scale_reg: float, iterations: int, out_dir: str,
+                 max_cap: int | None = None, strategy: str | None = None,
                  base_path: str = BASE_CONFIG) -> str:
-    """検証済み base config を読み、scale_reg / iterations を反映した一時 config を out_dir に書く。
-    適用モードは全画像学習（holdout 無し）なので eval は無効化。返り値: 生成 config パス。"""
+    """検証済み base config を読み、scale_reg / iterations / max_cap / strategy を反映した
+    一時 config を out_dir に書く。適用モードは全画像学習（holdout 無し）なので eval は無効化。
+    max_cap / strategy は None なら base の値を保持。返り値: 生成 config パス。"""
     with open(base_path, encoding="utf-8") as f:
         cfg = json.load(f)
+    base_iters = int(cfg.get("iterations") or iterations)
     cfg["scale_reg"] = float(scale_reg)
     cfg["iterations"] = int(iterations)
+    if max_cap is not None:
+        cfg["max_cap"] = int(max_cap)
+    if strategy:
+        cfg["strategy"] = strategy
+    # iterations を伸ばしたら密度化の停止点(stop_refine)も比例して延長し、max_cap まで成長させる。
+    # base(=30000)と同じ iterations なら係数1.0＝従来挙動を維持（検証済み設定を壊さない）。
+    if cfg.get("stop_refine") and base_iters:
+        cfg["stop_refine"] = max(1, round(int(cfg["stop_refine"]) * iterations / base_iters))
     cfg["eval_steps"] = [int(iterations)]
     cfg["save_steps"] = [int(iterations)]
     cfg["enable_eval"] = False
@@ -119,11 +215,15 @@ def build_config(scale_reg: float, iterations: int, out_dir: str,
 
 
 def build_command(exe: str, config_path: str, data_dir: str, out_dir: str,
-                  undistort: bool = False) -> list[str]:
+                  undistort: bool = False, detail_maps: bool = False) -> list[str]:
     cmd = [exe, "--headless", "--config", config_path,
            "--data-path", data_dir, "--output-path", out_dir, "-r", "1"]
     if undistort:
         cmd.append("--undistort")
+    if detail_maps:
+        # MRNF 専用フラグ（config キーではなく CLI）。refine 信号を SSIM 誤差マップ + Sobel
+        # エッジマップで重み付けし、高誤差・高周波（エッジ/ディテール）領域に密度化を集中させる。
+        cmd += ["--use-error-map", "--use-edge-map"]
     return cmd
 
 
@@ -261,9 +361,9 @@ class DesktopApp:
         ttk.Label(opt, text="強度").grid(row=0, column=0, sticky="w")
         self.preset_var = tk.StringVar(value=list(PRESETS)[0])
         ttk.OptionMenu(opt, self.preset_var, list(PRESETS)[0], *PRESETS).grid(row=0, column=1, sticky="w")
-        ttk.Label(opt, text="  品質").grid(row=0, column=2, sticky="w")
-        self.quality_var = tk.StringVar(value=list(QUALITY)[0])  # 本番30000 が既定
-        ttk.OptionMenu(opt, self.quality_var, list(QUALITY)[0], *QUALITY).grid(row=0, column=3, sticky="w")
+        ttk.Label(opt, text="  詳細度").grid(row=0, column=2, sticky="w")
+        self.detail_var = tk.StringVar(value=DETAIL_DEFAULT)  # 105k/5M（最高詳細）が既定
+        ttk.OptionMenu(opt, self.detail_var, DETAIL_DEFAULT, *DETAIL).grid(row=0, column=3, sticky="w")
 
         self.measure_var = tk.BooleanVar(value=True)   # floater 計測 既定 ON
         ttk.Checkbutton(opt, text="学習後に floater 数を計測", variable=self.measure_var).grid(row=1, column=0, columnspan=2, sticky="w")
@@ -271,6 +371,8 @@ class DesktopApp:
         ttk.Checkbutton(opt, text="歪み補正 (--undistort)", variable=self.undistort_var).grid(row=1, column=2, columnspan=2, sticky="w")
         self.compare_var = tk.BooleanVar(value=False)  # before/after は既定 OFF（時間2倍）
         ttk.Checkbutton(opt, text="比較用に baseline も学習（before/after・時間2倍）", variable=self.compare_var).grid(row=2, column=0, columnspan=4, sticky="w")
+        self.detailmap_var = tk.BooleanVar(value=True)  # MRNF ディテール強化 既定 ON
+        ttk.Checkbutton(opt, text="MRNF ディテール強化（error/edge map・高精細）", variable=self.detailmap_var).grid(row=3, column=0, columnspan=4, sticky="w")
 
         btns = ttk.Frame(root)
         btns.pack(fill="x", **pad)
@@ -406,26 +508,34 @@ class DesktopApp:
 
     # ---- actions ----
     def _start(self):
+        from tkinter import messagebox
         data = self.data_var.get().strip()
         out = self.out_var.get().strip()
         exe = self.exe_var.get().strip()
         ok, msg, sparse = validate_dataset(data)
         if not ok:
-            from tkinter import messagebox
-            messagebox.showerror("データ不正", msg)
-            return
+            # RealityScan が稀に起こす「参照画像の数枚コピー漏れ」は、
+            # 確認のうえ images.txt から該当エントリを除去して続行する。
+            missing = missing_referenced_images(data)
+            if missing:
+                if not self._offer_repair_missing(data, missing):
+                    return  # 利用者が修復を辞退（status は設定済み・エラーは出さない）
+                ok, msg, sparse = validate_dataset(data)
+            if not ok:
+                messagebox.showerror("データ不正", msg)
+                return
         if not exe or not os.path.isfile(exe):
-            from tkinter import messagebox
             messagebox.showerror("LichtFeld 未検出", "LichtFeld 実行ファイルを指定してください。")
             return
         if not out:
             out = os.path.join(data, "exp", "train_floaterclean")
             self.out_var.set(out)
         scale_reg = PRESETS[self.preset_var.get()]
-        iters = QUALITY[self.quality_var.get()]
+        iters, max_cap = DETAIL[self.detail_var.get()]
         undistort = self.undistort_var.get()
         measure = self.measure_var.get()
         compare = self.compare_var.get()
+        detail_maps = self.detailmap_var.get()
         self._phase = ""
 
         self._stop.clear()
@@ -433,8 +543,9 @@ class DesktopApp:
         self.open_btn.configure(state="disabled")
         self.ss_btn.configure(state="disabled")
         self._last_ply = None
-        self.status.set(f"学習中… scale_reg={scale_reg} iter={iters}（データ読込中…）")
-        self._logln(f"=== 3DGS Floater Cleaner: scale_reg={scale_reg}, iter={iters}, "
+        self.status.set(f"学習中… {STRATEGY} scale_reg={scale_reg} iter={iters:,} cap={max_cap:,}（データ読込中…）")
+        self._logln(f"=== 3DGS Floater Cleaner: strategy={STRATEGY}, scale_reg={scale_reg}, "
+                    f"iter={iters:,}, max_cap={max_cap:,}, detail_maps={detail_maps}, "
                     f"compare={compare}, data={data} ===")
 
         def run_phase(label, scale, odir):
@@ -442,8 +553,8 @@ class DesktopApp:
             self._post(self._reset_progress)
             self._post(self.status.set, f"{label} 学習中…")
             self._post(self._logln, f"--- {label}: scale_reg={scale} -> {odir} ---")
-            cfg = build_config(scale, iters, odir)
-            cmd = build_command(exe, cfg, data, odir, undistort)
+            cfg = build_config(scale, iters, odir, max_cap=max_cap, strategy=STRATEGY)
+            cmd = build_command(exe, cfg, data, odir, undistort, detail_maps)
             self._post(self._logln, "$ " + " ".join(cmd))
             rc = run_training(cmd, os.path.join(odir, "train.log"),
                               on_line=self._on_train_line, should_stop=self._stop.is_set)
@@ -499,6 +610,37 @@ class DesktopApp:
 
         self._worker = threading.Thread(target=work, daemon=True)
         self._worker.start()
+
+    def _offer_repair_missing(self, data, missing) -> bool:
+        """RealityScan のコピー漏れ（参照画像欠落）を確認ダイアログ後に自動修復する。
+        修復して続行可能なら True、中止/失敗なら False。GUI スレッドから呼ばれる。"""
+        from tkinter import messagebox
+        n = len(missing)
+        head = "、".join(missing[:6]) + (f"  ほか{n - 6}枚" if n > 6 else "")
+        if not messagebox.askyesno(
+            "画像のコピー漏れを検出",
+            f"COLMAP モデルが参照する画像 {n} 枚が images/ に見つかりません:\n"
+            f"  {head}\n\n"
+            "RealityScan のエクスポートで稀に起きるコピー漏れの可能性があります。\n\n"
+            "該当エントリを images.txt から除去し、残りの画像で学習しますか?\n"
+            "・元の images.txt は images.txt.bak にバックアップされます\n"
+            "・失うのは欠落した画像のビューのみ（3DGS 学習への影響はごく僅か）",
+        ):
+            self.status.set("中止: 画像欠落のため学習を開始しませんでした。")
+            return False
+        try:
+            if _SCRIPTS not in sys.path:
+                sys.path.insert(0, _SCRIPTS)
+            import prune_missing_images as pmi  # noqa
+            r = pmi.apply_prune(data)
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("修復に失敗", f"images.txt の修復に失敗しました:\n{e}")
+            return False
+        bak = (f"（原本: {os.path.basename(r['backup'])}）"
+               if r.get("backup") else "（既存 .bak を保持）")
+        self._logln(f"🔧 コピー漏れを修復: {len(r['removed'])} 枚のエントリを除去 → "
+                    f"{r['kept']} 枚で学習 {bak}")
+        return True
 
     def _cancel(self):
         self._stop.set()
