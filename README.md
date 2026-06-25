@@ -10,11 +10,13 @@
 
 ## これは何をするツール？
 
-3DGS の学習結果には、どの視点からも観測が薄い領域に「フローター（浮遊ゴースト）」が現れます。本ツールは、検証で有効と確認した **学習時の幾何正則化 `scale_reg`** を使って学習し、**浮遊フローターを 75〜82% 低減**します（品質指標 PSNR/SSIM はほぼ不変）。
+3DGS の学習結果には、どの視点からも観測が薄い領域に「フローター（浮遊ゴースト）」が現れます。本ツールは LichtFeld を **MRNF 戦略**で学習し、**詳細度プリセット（30k/1M〜150k/8M・既定 105k/5M）** で高精細に再構成しつつ、学習時の幾何正則化 **`scale_reg`** で浮遊フローターを抑えます。
+
+> `scale_reg=0.02` による floater **−75〜82%**（PSNR/SSIM ほぼ不変）は **MCMC での検証値**です。既定の MRNF は高精細を優先する設定で、floater 数は学習後に計測表示しますが低減は保証しません（検証の詳細は [FINDINGS.md](FINDINGS.md)）。
 
 - **入力**：RealityScan のアライメントを **COLMAP 形式でエクスポートしたフォルダ**（`images/` + `sparse/0/`）
 - **出力**：低フローターの 3DGS `.ply`
-- **学習エンジン**：[LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio)（MCMC）をヘッドレス実行
+- **学習エンジン**：[LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio)（**MRNF**、詳細度 30k/1M〜150k/8M）をヘッドレス実行
 
 ---
 
@@ -24,7 +26,7 @@
 2. `app\run_desktop.bat` をダブルクリック（初回のみ Python 仮想環境を自動作成）。
    - デスクトップにショートカットを作るなら `powershell -ExecutionPolicy Bypass -File app\install_desktop_shortcut.ps1`
 3. **データフォルダ**（RealityScan→COLMAP：`images/` + `sparse/0`）を選択。
-4. 既定のまま「学習開始」（強度=標準 `scale_reg=0.02` / 品質=本番 30000 / floater計測 ON）。
+4. 既定のまま「学習開始」（詳細度=**最高詳細 105k/5M**〔既定〕/ 戦略=MRNF / 強度=標準 `scale_reg=0.02` / floater計測 ON）。
 5. 完了後：**「SuperSplatで開く」**で編集・SOG 出力、**「出力フォルダを開く」**で `.ply` を確認。
 
 ### 必要環境
@@ -36,7 +38,9 @@
 
 ## 機能
 
-- 検証済み `scale_reg` 設定で低フローター `.ply` を出力（強度プリセット：**標準 0.02** / 強め 0.04 / オフ）
+- **詳細度プリセット5段**：30k/1M・60k/2M・90k/3.5M・**105k/5M〔既定〕**・150k/8M。`max_cap`（最大ガウシアン数）と密度化停止点 `stop_refine` を iterations に応じ自動調整
+- 幾何正則化 `scale_reg` でフローター抑制（強度：**標準 0.02** / 強め 0.04 / オフ）。MCMC で −75〜82% を確認（MRNF では未検証・計測のみ）
+- **MRNF ディテール強化トグル**（既定 ON）：`--use-error-map` / `--use-edge-map` で SSIM 誤差・Sobel エッジ領域に密度化を集中させ高精細化
 - **実%進捗バー**（再描画 4Hz 上限で低負荷）、学習後に **floater 数を自動計測**して表示
 - **SuperSplat 連携**：完了後ボタンで出力 `.ply` を SuperSplat（編集・SOG 出力可）で開く。ローカル exe があれば直接起動、無ければ web 版を開き `.ply` をエクスプローラで選択表示（ドラッグ&ドロップ）
 - **before/after 比較**（任意・既定 OFF・時間2倍）：baseline と並べて floater 削減率を表示
@@ -67,9 +71,12 @@ app/
   install_desktop_shortcut.ps1 デスクトップショートカット作成（任意）
   app.py                      旧 Gradio 検証 UI（研究記録として残置）
 configs/
-  lichtfeld_scalereg02_prod30k.json  推奨学習設定（scale_reg=0.02, 30000 iter）
-  lichtfeld_scalereg02.json          同（短時間 15000 iter）
-scripts/                       検証ハーネス（floater 指標 / A-B 比較 / COLMAP・PLY I/O 等）
+  lichtfeld_mrnf_30k_1M.json … 150k_8M.json  詳細度プリセット5段（MRNF, scale_reg=0.02）
+  lichtfeld_scalereg02_prod30k.json  build_config のテンプレ兼検証 base（MCMC/30k）
+  lichtfeld_scalereg02.json          検証用（MCMC/短時間 15000 iter）
+scripts/
+  gen_detail_configs.py        詳細度プリセット → 独立 config(JSON) を生成
+  （ほか検証ハーネス：floater 指標 / A-B 比較 / COLMAP・PLY I/O 等）
 tests/                         ユニットテスト
 FINDINGS.md                    検証の結論（floater(a) は scale_reg で解決 / floater(b) は背景）
 GSPLAT_SETUP.md                深度正則化(gsplat)実験の再現メモ（上級・任意）
